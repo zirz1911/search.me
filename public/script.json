@@ -1,0 +1,70 @@
+[
+  {
+    "id": "S-001",
+    "name": "Youtube View",
+    "target": "gemlogin",
+    "summary": "ปั่นยอดวิว Youtube ตามลิงก์ที่กำหนด",
+    "language": "json",
+    "lastUpdated": "2025-08-01",
+    "confidence": 0.92,
+    "tags": ["watch", "view", "youtube"],
+    "token": "aFPfO08a7AwfrJitgROnJQIns9SVg60JYiq6Ad6qzPaRwz1haQD2FC7SivTSPAJg",
+    "device_id": "657F210AF8D89403096BB6D13B5641FA",
+    "profile_id": "12",
+    "workflow_id": "MNmznbERRklEiSWNnPOfk",
+    "required_params": ["URL: วิดีโอที่ต้องการดู"],
+    "default_params": { "url": "https://www.youtube.com/watch?v=O3XPXYKA4Ng" },
+    "soft_id": "1",
+    "details": "อธิบายการทำงาน, เงื่อนไข, สิ่งที่ควรระวัง ฯลฯ (รองรับหลายบรรทัด)",
+    "docs_url": "https://example.com/docs/login-rotation",
+    "examples": [
+    "ตัวอย่างการใช้งานแบบที่ 1",
+    "ตัวอย่างการใช้งานแบบที่ 2"
+  ]
+  },
+  {
+    "id": "S-002",
+    "name": "Phonefarm Warm-up Scheduler",
+    "target": "gemphonefarm",
+    "summary": "จัดตาราง warm-up เครื่อง/โปรไฟล์, ตั้งค่าความถี่และช่วงเวลา.",
+    "language": "Node.js",
+    "lastUpdated": "2025-08-20",
+    "confidence": 0.88,
+    "tags": ["scheduler", "warmup", "profiles"]
+  },
+  {
+    "id": "S-003",
+    "name": "n8n: TikTok Affiliate Ingest → Classify Intent",
+    "target": "n8n",
+    "summary": "Webhook รับคำขอลูกค้า → LLM จัดหมวดหมู่ → ส่งต่อไปยัง connector ที่เหมาะสม.",
+    "language": "n8n workflow",
+    "lastUpdated": "2025-08-24",
+    "confidence": 0.9,
+    "tags": ["webhook", "routing", "tiktok"]
+  },
+  {
+    "id": "S-004",
+    "name": "Proxy Healthcheck & Failover",
+    "target": "gemlogin",
+    "summary": "ตรวจสุขภาพ proxy ราย 5 นาที, auto-switch เมื่อ latency เกิน threshold.",
+    "language": "Go",
+    "lastUpdated": "2025-07-30",
+    "confidence": 0.84,
+    "tags": ["proxy", "healthcheck", "failover"],
+    "token": "aFPfO08a7AwfrJitgROnJQIns9SVg60JYiq6Ad6qzPaRwz1haQD2FC7SivTSPAJg",
+    "device_id": "2D6F1F249424721ACC1733B67BFA2378",
+    "profile_id": "4",
+    "workflow_id": "vCGvkuenEcRCrrB3tMXjk",
+    "soft_id": "1"
+  },
+  {
+    "id": "S-005",
+    "name": "Phonefarm Content Uploader (Batch)",
+    "target": "gemphonefarm",
+    "summary": "อัปโหลดคอนเทนต์เป็นชุด, map meta/hashtag, รายงานสถานะเรียลไทม์.",
+    "language": "Python",
+    "lastUpdated": "2025-08-18",
+    "confidence": 0.86,
+    "tags": ["uploader", "batch", "report"]
+  }
+]
