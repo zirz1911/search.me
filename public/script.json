@@ -13,10 +13,10 @@
     "profile_id": "12",
     "workflow_id": "MNmznbERRklEiSWNnPOfk",
     "required_params": ["URL: วิดีโอที่ต้องการดู"],
-    "default_params": { "url": "https://www.youtube.com/watch?v=O3XPXYKA4Ng" },
+    "default_params": { "url": "" },
     "soft_id": "1",
-    "details": "อธิบายการทำงาน, เงื่อนไข, สิ่งที่ควรระวัง ฯลฯ (รองรับหลายบรรทัด)",
-    "docs_url": "https://example.com/docs/login-rotation",
+    "details": "สคริปต์รันรับชมวิดีโอยูทูป แบบไม่ต้องล็อกอินบัญชี Google",
+    "docs_url": "https://example.com/docs/youtube",
     "examples": [
     "ตัวอย่างการใช้งานแบบที่ 1",
     "ตัวอย่างการใช้งานแบบที่ 2"

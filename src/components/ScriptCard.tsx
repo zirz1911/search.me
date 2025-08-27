@@ -42,48 +42,38 @@ export default function ScriptCard({
         <span className="text-gray-500">ความเชื่อมั่น {(s.confidence * 100).toFixed(0)}%</span>
       </div>
 
-      {needsParams && (
-        <div className="mb-3 rounded-xl bg-gray-50 p-3">
-          <p className="mb-2 text-xs font-medium text-gray-600">Parameter ที่ต้องกรอก:</p>
-          <div className="space-y-2">
-            {s.required_params!.map((key) => (
-              <label key={key} className="block">
-                <span className="mb-1 block text-xs text-gray-500">{key}</span>
-                <input
-                  value={paramValues[s.id]?.[key] ?? ""}
-                  onChange={(e) => updateParam(s.id, key, e.target.value)}
-                  placeholder={s.default_params?.[key] ?? ""}
-                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-                />
-              </label>
-            ))}
-          </div>
+
+      <div className="mt-4 space-y-2">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => onConfig(s.id)}
+            className="rounded-xl border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+          >
+            ตั้งค่าสคริปต์
+          </button>
+          <button
+            onClick={() => onView(s.id)}
+            className="rounded-xl border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+          >
+            View
+          </button>
         </div>
-      )}
-
-      <div className="mt-4 flex items-center gap-2">
-        <button
-          onClick={() => onConfig(s.id)}
-          className="rounded-xl border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-        >
-          ตั้งค่าสคริปต์
-        </button>
-
         <button
           onClick={() => onRun(s.id)}
           disabled={missingRequired}
-          className={`rounded-xl px-3 py-2 text-sm font-medium text-white ${missingRequired ? "bg-indigo-300 cursor-not-allowed" : "bg-indigo-600 hover:bg-indigo-700"}`}
+          className={`w-full rounded-xl px-3 py-2 text-sm font-medium text-white ${
+            missingRequired
+              ? "bg-indigo-300 cursor-not-allowed"
+              : "bg-indigo-600 hover:bg-indigo-700"
+          }`}
         >
-          {s.target === "n8n" ? "ส่งไป n8n" :
-           s.target === "gemlogin" ? "ส่งไป Gemlogin" :
-           s.target === "gemphonefarm" ? "ส่งไป Gemphonefarm" : "ส่งไป"}
-        </button>
-
-        <button
-          onClick={() => onView(s.id)}
-          className="rounded-xl border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-        >
-          View
+          {s.target === "n8n"
+            ? "ส่งไป n8n"
+            : s.target === "gemlogin"
+            ? "ส่งไป Gemlogin"
+            : s.target === "gemphonefarm"
+            ? "ส่งไป Gemphonefarm"
+            : "ส่งไป"}
         </button>
       </div>
 
