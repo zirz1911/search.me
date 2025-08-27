@@ -4,6 +4,27 @@ import { getEndpointForTarget, postJSON } from "./lib/api";
 import ScriptCard from "./components/ScriptCard";
 import { ConfigModal, ViewModal } from "./components/Modals";
 
+// ---- AI intent endpoint (n8n) ----
+async function callN8nIntentAPI(text: string) {
+  const url = (import.meta as any).env.VITE_AI_INTENT_URL as string | undefined;
+  if (!url) return null;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    // expected shape:
+    // { matches:[{id:string, score:number, why?:string}], required_params_suggested?:string[], target_suggested?:string }
+    return data;
+  } catch (e) {
+    console.warn("AI intent API error:", e);
+    return null;
+  }
+}
+
 const DEFAULT_SCRIPTS: ScriptItem[] = [ /* คงไว้เหมือนเดิมหรือเว้นว่างก็ได้ */ ];
 
 export default function App() { return <GemSearch />; }
@@ -15,13 +36,76 @@ function GemSearch() {
 
   const [allScripts, setAllScripts] = useState<ScriptItem[]>(DEFAULT_SCRIPTS);
   const [results, setResults] = useState<ScriptItem[]>([]);
+  const [matchScores, setMatchScores] = useState<Record<string, number>>({});
   const [viewing, setViewing] = useState<ScriptItem | null>(null);
   const [configFor, setConfigFor] = useState<ScriptItem | null>(null);
 
-  const [paramValues, setParamValues] = useState<Record<string, Record<string, string>>>({});
+  // ---- Intent-based matching helpers ----
+  const WEIGHTS = {
+    name: 0.35,
+    summary: 0.30,
+    tags: 0.25,
+    target: 0.07,
+    language: 0.03,
+  } as const;
+
+  function tokenize(text: string): string[] {
+    return (text || "")
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}]+/u) // อักษรทุกภาษา + ตัวเลข
+      .filter(Boolean);
+  }
+
+  function scoreScript(s: ScriptItem, query: string): number {
+    const q = query.trim().toLowerCase();
+    if (!q) return 0; // ไม่มีคะแนนถ้าไม่กรอก
+    const qTokens = tokenize(q);
+
+    // เตรียมฟิลด์
+    const nameTokens = tokenize(s.name);
+    const summaryTokens = tokenize(s.summary);
+    const tagTokens = (s.tags || []).map((t) => t.toLowerCase());
+    const target = (s.target || "").toLowerCase();
+    const lang = (s.language || "").toLowerCase();
+
+    // นับการชนกันของโทเคน (token overlap)
+    const overlap = (a: string[], b: string[]) => {
+      if (!a.length || !b.length) return 0;
+      const setB = new Set(b);
+      let hit = 0;
+      for (const t of a) if (setB.has(t)) hit++;
+      return hit / a.length; // recall เทียบกับ query
+    };
+
+    const nameScore = overlap(qTokens, nameTokens);
+    const sumScore = overlap(qTokens, summaryTokens);
+
+    // แท็ก: ให้คะแนนเมื่อมีคำที่ตรงกับแท็ก หรือแท็กมีบางส่วนครอบคลุมคำค้น
+    let tagScore = 0;
+    for (const qt of qTokens) {
+      if (tagTokens.some((tt) => tt.includes(qt))) tagScore += 1;
+    }
+    tagScore = Math.min(tagScore / Math.max(1, qTokens.length), 1);
+
+    const targetScore = qTokens.some((t) => target.includes(t)) ? 1 : 0;
+    const langScore = qTokens.some((t) => lang.includes(t)) ? 1 : 0;
+
+    const total =
+      nameScore * WEIGHTS.name +
+      sumScore * WEIGHTS.summary +
+      tagScore * WEIGHTS.tags +
+      targetScore * WEIGHTS.target +
+      langScore * WEIGHTS.language;
+
+    return Math.max(0, Math.min(1, total));
+  }
+  // ---- End helpers ----
+
   function updateParam(scriptId: string, key: string, val: string) {
     setParamValues((prev) => ({ ...prev, [scriptId]: { ...(prev[scriptId] || {}), [key]: val } }));
   }
+
+  const [paramValues, setParamValues] = useState<Record<string, Record<string, string>>>({});
 
   useEffect(() => {
     fetch("/script.json", { cache: "no-store" })
@@ -35,17 +119,125 @@ function GemSearch() {
       .catch(() => {});
   }, []);
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setSubmitted(true); setIsSearching(true);
-    setTimeout(() => {
-      const k = q.trim().toLowerCase();
-      const filtered = allScripts.filter((s) =>
-        !k || s.name.toLowerCase().includes(k) || s.summary.toLowerCase().includes(k) ||
-        s.target.toLowerCase().includes(k) || s.tags.some((t) => t.toLowerCase().includes(k))
-      );
-      setResults(filtered); setIsSearching(false);
-    }, 500);
+    setSubmitted(true);
+    setIsSearching(true);
+
+    const qText = q.trim();
+    if (!qText) {
+      setResults(allScripts);
+      setMatchScores({});
+      setIsSearching(false);
+      return;
+    }
+
+    // 1) Try n8n AI intent first
+    const ai = await callN8nIntentAPI(qText);
+    if (ai && Array.isArray(ai.matches) && ai.matches.length) {
+      // Build id->score map
+      const idToScore: Record<string, number> = {};
+      ai.matches.forEach((m: any) => { if (m && m.id) idToScore[m.id] = Number(m.score) || 0; });
+
+      // ----- เติมพารามิเตอร์อัตโนมัติจาก AI -----
+      const newParamValues = { ...paramValues };
+
+      // helper: ดึง url จาก AI (global หรือเฉพาะสคริปต์ที่แมตช์)
+      const urlFromAI =
+        (ai.extracted_params && typeof ai.extracted_params === "object" && (ai.extracted_params.url || ai.extracted_params.link || ai.extracted_params.video_url)) ||
+        (() => {
+          if (!Array.isArray(ai.per_script_params)) return undefined;
+          const first = ai.per_script_params.find((p: any) => p && p.id && (p.params?.url || p.params?.link || p.params?.video_url));
+          return first ? (first.params.url || first.params.link || first.params.video_url) : undefined;
+        })();
+
+      // regex fallback: เผื่อ AI ไม่ส่งมา (ดึงจากข้อความค้นหา)
+      let urlFromQuery: string | undefined = undefined;
+      try {
+        const m = qText.match(/((https?:\/\/)?(www\.)?[\w.-]+\.[a-z]{2,}(\/\S*)?)/i);
+        if (m) {
+          urlFromQuery = m[0];
+          if (urlFromQuery && !/^https?:\/\//i.test(urlFromQuery)) {
+            urlFromQuery = "https://" + urlFromQuery;
+          }
+        }
+      } catch {}
+
+      // รวมแหล่งที่มา (AI ก่อน, ไม่งั้นใช้ regex)
+      const candidateURL = (typeof urlFromAI === "string" && urlFromAI.trim()) ? urlFromAI.trim() :
+                           (typeof urlFromQuery === "string" && urlFromQuery.trim()) ? urlFromQuery.trim() :
+                           undefined;
+
+      // จาก extracted_params (global)
+      if (ai.extracted_params && typeof ai.extracted_params === "object") {
+        for (const s of allScripts) {
+          if (idToScore[s.id] !== undefined) {
+            const cur = newParamValues[s.id] || { ...(s.default_params || {}) };
+            for (const [k, v] of Object.entries(ai.extracted_params)) {
+              const key = String(k).toLowerCase();
+              const val = typeof v === "string" ? v.trim() : "";
+              if (val) {
+                // เติมแม้ไม่ได้ประกาศ required_params (กันเคสชื่อคีย์ไม่ตรง)
+                cur[key] = val;
+              }
+            }
+            // ถ้ายังไม่มี url แต่มี candidateURL ให้เติม
+            if (!cur.url && candidateURL) cur.url = candidateURL;
+            newParamValues[s.id] = cur;
+          }
+        }
+      }
+
+      // จาก per_script_params (เจาะจงต่อสคริปต์)
+      if (Array.isArray(ai.per_script_params)) {
+        for (const p of ai.per_script_params) {
+          const s = allScripts.find(x => x.id === p.id);
+          if (!s) continue;
+          const cur = newParamValues[s.id] || { ...(s.default_params || {}) };
+          for (const [k, v] of Object.entries(p.params || {})) {
+            const key = String(k).toLowerCase();
+            const val = typeof v === "string" ? v.trim() : "";
+            if (val) cur[key] = val;
+          }
+          // ถ้ายังไม่มี url แต่มี candidateURL ให้เติม
+          if (!cur.url && candidateURL) cur.url = candidateURL;
+          newParamValues[s.id] = cur;
+        }
+      }
+
+      // ถ้าไม่เข้าเงื่อนไขด้านบน แต่ยังมี candidateURL และมีแมตช์ ให้เติมให้ทุกสคริปต์ที่แมตช์
+      if (candidateURL) {
+        for (const s of allScripts) {
+          if (idToScore[s.id] !== undefined) {
+            const cur = newParamValues[s.id] || { ...(s.default_params || {}) };
+            if (!cur.url) cur.url = candidateURL;
+            newParamValues[s.id] = cur;
+          }
+        }
+      }
+
+      setParamValues(newParamValues);
+      // --------------------------------------------
+
+      // Order our local scripts by AI ranking
+      const ordered = allScripts
+        .filter((s) => idToScore[s.id] !== undefined)
+        .sort((a, b) => (idToScore[b.id] - idToScore[a.id]));
+
+      setResults(ordered);
+      setMatchScores(idToScore);
+      setIsSearching(false);
+      return;
+    }
+
+    // 2) Fallback to local scoring when AI not available or no matches
+    const rankedList = allScripts
+      .map((s) => ({ s, score: scoreScript(s, qText) }))
+      .sort((a, b) => b.score - a.score)
+      .filter((x) => x.score > 0.0001);
+    setResults(rankedList.map((x) => x.s));
+    setMatchScores(Object.fromEntries(rankedList.map((x) => [x.s.id, x.score])));
+    setIsSearching(false);
   }
 
   async function handleRun(id: string) {
@@ -92,13 +284,17 @@ function GemSearch() {
       <form onSubmit={handleSubmit} className="mx-auto flex w-full max-w-3xl items-center gap-3 px-6">
         <div className="flex w-full items-center rounded-full bg-indigo-700 px-5 py-3 shadow-sm">
           <MagnifierIcon className="mr-3 h-5 w-5 text-white/90" />
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="พิมพ์สิ่งที่อยากทำ..." className="w-full bg-transparent text-white placeholder-white/70 outline-none" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="อธิบายสคริปต์ที่ต้องการ… เช่น: เพิ่มวิว YouTube จากลิงก์" className="w-full bg-transparent text-white placeholder-white/70 outline-none" />
           <button type="submit" className="ml-3 rounded-full bg-white/15 px-4 py-2 text-sm font-medium text-white backdrop-blur hover:bg-white/25">ค้นหา</button>
         </div>
       </form>
 
       <main className="mx-auto max-w-5xl px-6 pb-24 pt-8">
-        {submitted && (<p className="mb-4 text-sm text-gray-500">{isSearching ? "กำลังค้นหา..." : `ผลการค้นหา ${results.length} รายการ (ข้อมูลจำลอง)`}</p>)}
+        {submitted && (
+          <p className="mb-4 text-sm text-gray-500">
+            {isSearching ? "กำลังวิเคราะห์คำอธิบาย..." : `ผลที่ใกล้เคียง ${results.length} รายการ (ข้อมูลจำลอง)`}
+          </p>
+        )}
 
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {isSearching && <PlaceholderCards />}
@@ -106,8 +302,9 @@ function GemSearch() {
             <ScriptCard
               key={s.id}
               s={s}
+              score={matchScores[s.id]}
               paramValues={paramValues}
-              updateParam={updateParam}
+              updateParam={(key, val) => updateParam(s.id, key, val)}
               onRun={handleRun}
               onView={(id) => setViewing(allScripts.find(x => x.id === id) || null)}
               onConfig={(id) => setConfigFor(allScripts.find(x => x.id === id) || null)}

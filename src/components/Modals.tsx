@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import type { ScriptItem } from "../types";
 
 export function ConfigModal({
@@ -11,6 +11,18 @@ export function ConfigModal({
 }) {
   const needsParams =
     script.target === "gemlogin" && Array.isArray(script.required_params) && script.required_params.length > 0;
+
+  const [formValues, setFormValues] = useState<Record<string, string>>({
+    ...(script.default_params || {}),
+    ...(paramValues[script.id] || {}),
+  });
+
+  useEffect(() => {
+    setFormValues({
+      ...(script.default_params || {}),
+      ...(paramValues[script.id] || {}),
+    });
+  }, [script.id, paramValues]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -36,8 +48,8 @@ export function ConfigModal({
                   <label key={key} className="block">
                     <span className="mb-1 block text-xs text-gray-500">{key.toUpperCase()}</span>
                     <input
-                      value={paramValues[script.id]?.[key] ?? ""}
-                      onChange={(e) => updateParam(script.id, key, e.target.value)}
+                      value={formValues[key] ?? ""}
+                      onChange={(e) => setFormValues((prev) => ({ ...prev, [key]: e.target.value }))}
                       placeholder={script.default_params?.[key] ?? ""}
                       className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
                     />
@@ -52,7 +64,16 @@ export function ConfigModal({
           )}
 
           <div className="flex items-center justify-end gap-2 pt-2">
-            <button onClick={onClose} className="rounded-lg border px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50">
+            <button
+              onClick={() => {
+                const keys = Array.isArray(script.required_params) ? script.required_params : Object.keys(formValues);
+                for (const k of keys) {
+                  updateParam(script.id, k, formValues[k] ?? "");
+                }
+                onClose();
+              }}
+              className="rounded-lg border px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50"
+            >
               บันทึกค่า
             </button>
           </div>

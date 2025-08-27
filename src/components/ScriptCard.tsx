@@ -4,15 +4,19 @@ import type { ScriptItem } from "../types";
 type Props = {
   s: ScriptItem;
   paramValues: Record<string, Record<string, string>>;
-  updateParam: (scriptId: string, key: string, val: string) => void;
+  // Optional and 2-arg signature to match parent usage
+  updateParam?: (key: string, val: string) => void;
   onRun: (id: string) => void;
   onView: (id: string) => void;
   onConfig: (id: string) => void;
+  score?: number; // ความใกล้เคียง (0-1)
 };
 
 export default function ScriptCard({
-  s, paramValues, updateParam, onRun, onView, onConfig
+  s, paramValues, updateParam, onRun, onView, onConfig, score
 }: Props) {
+  const pct = typeof score === "number" ? Math.round(score * 100) : null;
+
   const needsParams =
     s.target === "gemlogin" && Array.isArray(s.required_params) && s.required_params.length > 0;
 
@@ -25,7 +29,14 @@ export default function ScriptCard({
         <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium capitalize text-gray-700">
           {s.target}
         </span>
-        <span className="text-xs text-gray-400">อัปเดต {s.lastUpdated}</span>
+        <div className="flex items-center gap-2">
+          {pct !== null && (
+            <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700">
+              ใกล้เคียง {pct}%
+            </span>
+          )}
+          <span className="text-xs text-gray-400">อัปเดต {s.lastUpdated}</span>
+        </div>
       </div>
 
       <h3 className="mb-1 line-clamp-2 text-lg font-semibold">{s.name}</h3>
