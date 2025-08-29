@@ -6,7 +6,7 @@ import { scripts } from "../db/schema";
 import { eq } from "drizzle-orm";
 
 const app = express();
-app.use(cors());
+app.use(cors({ origin: ['http://localhost:5173'], credentials: false }));
 app.use(express.json());
 
 // Health check

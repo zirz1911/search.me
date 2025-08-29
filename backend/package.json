@@ -1,7 +1,7 @@
 {
     "scripts": {
         "db:gen": "drizzle-kit generate",
-        "dev:api": "ts-node backend/src/api/server.ts",
+        "dev:api": "DOTENV_CONFIG_PATH=backend/.env ts-node -r dotenv/config backend/src/api/server.ts",
         "db:migrate": "drizzle-kit migrate",
         "db:seed": "ts-node backend/src/db/seed.ts",
         "psql:tables": "docker compose exec db psql -U gem -d gemscripts -c \"\\\\dt\"",

@@ -4,26 +4,14 @@ import { getEndpointForTarget, postJSON } from "./lib/api";
 import ScriptCard from "./components/ScriptCard";
 import { ConfigModal, ViewModal } from "./components/Modals";
 
-// ---- AI intent endpoint (n8n) ----
-async function callN8nIntentAPI(text: string) {
-  const url = (import.meta as any).env.VITE_AI_INTENT_URL as string | undefined;
-  if (!url) return null;
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    // expected shape:
-    // { matches:[{id:string, score:number, why?:string}], required_params_suggested?:string[], target_suggested?:string }
-    return data;
-  } catch (e) {
-    console.warn("AI intent API error:", e);
-    return null;
-  }
-}
+import { callN8nIntentAPI } from "./lib/n8n";
+import { scoreScript } from "./lib/intent";
+import { mapRowToScriptItem } from "./lib/mappers";
+import { applyAiToSearch } from "./lib/ai";
+
+// ---- Backend API base (for Postgres service) ----
+const API_BASE = (import.meta as any).env.VITE_API_BASE as string | undefined;
+
 
 const DEFAULT_SCRIPTS: ScriptItem[] = [ /* คงไว้เหมือนเดิมหรือเว้นว่างก็ได้ */ ];
 
@@ -39,67 +27,8 @@ function GemSearch() {
   const [matchScores, setMatchScores] = useState<Record<string, number>>({});
   const [viewing, setViewing] = useState<ScriptItem | null>(null);
   const [configFor, setConfigFor] = useState<ScriptItem | null>(null);
+  const [dataSource, setDataSource] = useState<'api' | 'file' | 'none'>('none');
 
-  // ---- Intent-based matching helpers ----
-  const WEIGHTS = {
-    name: 0.35,
-    summary: 0.30,
-    tags: 0.25,
-    target: 0.07,
-    language: 0.03,
-  } as const;
-
-  function tokenize(text: string): string[] {
-    return (text || "")
-      .toLowerCase()
-      .split(/[^\p{L}\p{N}]+/u) // อักษรทุกภาษา + ตัวเลข
-      .filter(Boolean);
-  }
-
-  function scoreScript(s: ScriptItem, query: string): number {
-    const q = query.trim().toLowerCase();
-    if (!q) return 0; // ไม่มีคะแนนถ้าไม่กรอก
-    const qTokens = tokenize(q);
-
-    // เตรียมฟิลด์
-    const nameTokens = tokenize(s.name);
-    const summaryTokens = tokenize(s.summary);
-    const tagTokens = (s.tags || []).map((t) => t.toLowerCase());
-    const target = (s.target || "").toLowerCase();
-    const lang = (s.language || "").toLowerCase();
-
-    // นับการชนกันของโทเคน (token overlap)
-    const overlap = (a: string[], b: string[]) => {
-      if (!a.length || !b.length) return 0;
-      const setB = new Set(b);
-      let hit = 0;
-      for (const t of a) if (setB.has(t)) hit++;
-      return hit / a.length; // recall เทียบกับ query
-    };
-
-    const nameScore = overlap(qTokens, nameTokens);
-    const sumScore = overlap(qTokens, summaryTokens);
-
-    // แท็ก: ให้คะแนนเมื่อมีคำที่ตรงกับแท็ก หรือแท็กมีบางส่วนครอบคลุมคำค้น
-    let tagScore = 0;
-    for (const qt of qTokens) {
-      if (tagTokens.some((tt) => tt.includes(qt))) tagScore += 1;
-    }
-    tagScore = Math.min(tagScore / Math.max(1, qTokens.length), 1);
-
-    const targetScore = qTokens.some((t) => target.includes(t)) ? 1 : 0;
-    const langScore = qTokens.some((t) => lang.includes(t)) ? 1 : 0;
-
-    const total =
-      nameScore * WEIGHTS.name +
-      sumScore * WEIGHTS.summary +
-      tagScore * WEIGHTS.tags +
-      targetScore * WEIGHTS.target +
-      langScore * WEIGHTS.language;
-
-    return Math.max(0, Math.min(1, total));
-  }
-  // ---- End helpers ----
 
   function updateParam(scriptId: string, key: string, val: string) {
     setParamValues((prev) => ({ ...prev, [scriptId]: { ...(prev[scriptId] || {}), [key]: val } }));
@@ -108,15 +37,46 @@ function GemSearch() {
   const [paramValues, setParamValues] = useState<Record<string, Record<string, string>>>({});
 
   useEffect(() => {
-    fetch("/script.json", { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : Promise.reject(r.statusText)))
-      .then((data: ScriptItem[]) => {
+    async function load() {
+      // 1) Try backend API first (VITE_API_BASE=/scripts)
+      if (API_BASE) {
+        try {
+          const res = await fetch(`${API_BASE}/scripts`, { cache: "no-store" });
+          if (res.ok) {
+            const rows = await res.json();
+            if (Array.isArray(rows)) {
+              const mapped = rows.map(mapRowToScriptItem);
+              setAllScripts(mapped);
+              const initParams = mapped.reduce((acc, it) => {
+                acc[it.id] = { ...(it.default_params || {}) };
+                return acc;
+              }, {} as Record<string, Record<string, string>>);
+              setParamValues(initParams);
+              setDataSource('api');
+              return; // done
+            }
+          }
+        } catch {}
+      }
+
+      // 2) Fallback to bundled json
+      try {
+        const r = await fetch("/script.json", { cache: "no-store" });
+        if (!r.ok) throw new Error(String(r.statusText));
+        const data = await r.json();
         if (!Array.isArray(data)) return;
-        setAllScripts(data);
-        const initParams = data.reduce((acc, it) => { acc[it.id] = { ...(it.default_params || {}) }; return acc; }, {} as Record<string, Record<string,string>>);
+        // ensure fields in camel for UI
+        const mapped = data.map(mapRowToScriptItem);
+        setAllScripts(mapped);
+        const initParams = mapped.reduce((acc, it) => {
+          acc[it.id] = { ...(it.default_params || {}) };
+          return acc;
+        }, {} as Record<string, Record<string, string>>);
         setParamValues(initParams);
-      })
-      .catch(() => {});
+        setDataSource('file');
+      } catch {}
+    }
+    load();
   }, []);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -135,95 +95,8 @@ function GemSearch() {
     // 1) Try n8n AI intent first
     const ai = await callN8nIntentAPI(qText);
     if (ai && Array.isArray(ai.matches) && ai.matches.length) {
-      // Build id->score map
-      const idToScore: Record<string, number> = {};
-      ai.matches.forEach((m: any) => { if (m && m.id) idToScore[m.id] = Number(m.score) || 0; });
-
-      // ----- เติมพารามิเตอร์อัตโนมัติจาก AI -----
-      const newParamValues = { ...paramValues };
-
-      // helper: ดึง url จาก AI (global หรือเฉพาะสคริปต์ที่แมตช์)
-      const urlFromAI =
-        (ai.extracted_params && typeof ai.extracted_params === "object" && (ai.extracted_params.url || ai.extracted_params.link || ai.extracted_params.video_url)) ||
-        (() => {
-          if (!Array.isArray(ai.per_script_params)) return undefined;
-          const first = ai.per_script_params.find((p: any) => p && p.id && (p.params?.url || p.params?.link || p.params?.video_url));
-          return first ? (first.params.url || first.params.link || first.params.video_url) : undefined;
-        })();
-
-      // regex fallback: เผื่อ AI ไม่ส่งมา (ดึงจากข้อความค้นหา)
-      let urlFromQuery: string | undefined = undefined;
-      try {
-        const m = qText.match(/((https?:\/\/)?(www\.)?[\w.-]+\.[a-z]{2,}(\/\S*)?)/i);
-        if (m) {
-          urlFromQuery = m[0];
-          if (urlFromQuery && !/^https?:\/\//i.test(urlFromQuery)) {
-            urlFromQuery = "https://" + urlFromQuery;
-          }
-        }
-      } catch {}
-
-      // รวมแหล่งที่มา (AI ก่อน, ไม่งั้นใช้ regex)
-      const candidateURL = (typeof urlFromAI === "string" && urlFromAI.trim()) ? urlFromAI.trim() :
-                           (typeof urlFromQuery === "string" && urlFromQuery.trim()) ? urlFromQuery.trim() :
-                           undefined;
-
-      // จาก extracted_params (global)
-      if (ai.extracted_params && typeof ai.extracted_params === "object") {
-        for (const s of allScripts) {
-          if (idToScore[s.id] !== undefined) {
-            const cur = newParamValues[s.id] || { ...(s.default_params || {}) };
-            for (const [k, v] of Object.entries(ai.extracted_params)) {
-              const key = String(k).toLowerCase();
-              const val = typeof v === "string" ? v.trim() : "";
-              if (val) {
-                // เติมแม้ไม่ได้ประกาศ required_params (กันเคสชื่อคีย์ไม่ตรง)
-                cur[key] = val;
-              }
-            }
-            // ถ้ายังไม่มี url แต่มี candidateURL ให้เติม
-            if (!cur.url && candidateURL) cur.url = candidateURL;
-            newParamValues[s.id] = cur;
-          }
-        }
-      }
-
-      // จาก per_script_params (เจาะจงต่อสคริปต์)
-      if (Array.isArray(ai.per_script_params)) {
-        for (const p of ai.per_script_params) {
-          const s = allScripts.find(x => x.id === p.id);
-          if (!s) continue;
-          const cur = newParamValues[s.id] || { ...(s.default_params || {}) };
-          for (const [k, v] of Object.entries(p.params || {})) {
-            const key = String(k).toLowerCase();
-            const val = typeof v === "string" ? v.trim() : "";
-            if (val) cur[key] = val;
-          }
-          // ถ้ายังไม่มี url แต่มี candidateURL ให้เติม
-          if (!cur.url && candidateURL) cur.url = candidateURL;
-          newParamValues[s.id] = cur;
-        }
-      }
-
-      // ถ้าไม่เข้าเงื่อนไขด้านบน แต่ยังมี candidateURL และมีแมตช์ ให้เติมให้ทุกสคริปต์ที่แมตช์
-      if (candidateURL) {
-        for (const s of allScripts) {
-          if (idToScore[s.id] !== undefined) {
-            const cur = newParamValues[s.id] || { ...(s.default_params || {}) };
-            if (!cur.url) cur.url = candidateURL;
-            newParamValues[s.id] = cur;
-          }
-        }
-      }
-
-      setParamValues(newParamValues);
-      // --------------------------------------------
-
-      // Order our local scripts by AI ranking
-      const ordered = allScripts
-        .filter((s) => idToScore[s.id] !== undefined)
-        .sort((a, b) => (idToScore[b.id] - idToScore[a.id]));
-
+      const { ordered, idToScore, paramValues: pv2 } = applyAiToSearch(qText, ai, allScripts, paramValues);
+      setParamValues(pv2);
       setResults(ordered);
       setMatchScores(idToScore);
       setIsSearching(false);
@@ -292,7 +165,24 @@ function GemSearch() {
       <main className="mx-auto max-w-5xl px-6 pb-24 pt-8">
         {submitted && (
           <p className="mb-4 text-sm text-gray-500">
-            {isSearching ? "กำลังวิเคราะห์คำอธิบาย..." : `ผลที่ใกล้เคียง ${results.length} รายการ (ข้อมูลจำลอง)`}
+            {isSearching ? (
+              "กำลังวิเคราะห์คำอธิบาย..."
+            ) : (
+              <>
+                ผลที่ใกล้เคียง {results.length} รายการ
+                <span
+                  className={`ml-2 inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                    dataSource === 'api'
+                      ? 'bg-emerald-50 text-emerald-700'
+                      : dataSource === 'file'
+                      ? 'bg-amber-50 text-amber-700'
+                      : 'bg-gray-100 text-gray-500'
+                  }`}
+                >
+                  {dataSource === 'api' ? 'DATABASE' : dataSource === 'file' ? 'File' : '—'}
+                </span>
+              </>
+            )}
           </p>
         )}
 
