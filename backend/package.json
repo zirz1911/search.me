@@ -1,0 +1,17 @@
+{
+    "scripts": {
+        "db:gen": "drizzle-kit generate",
+        "dev:api": "ts-node backend/src/api/server.ts",
+        "db:migrate": "drizzle-kit migrate",
+        "db:seed": "ts-node backend/src/db/seed.ts",
+        "psql:tables": "docker compose exec db psql -U gem -d gemscripts -c \"\\\\dt\"",
+        "psql:peek": "docker compose exec db psql -U gem -d gemscripts -c \"select * from scripts limit 5;\""
+    },
+    "devDependencies": {
+        "@types/node": "^24.3.0",
+        "@types/pg": "^8.15.5",
+        "dotenv": "^17.2.1",
+        "ts-node": "^10.9.2",
+        "typescript": "^5.9.2"
+    }
+}
