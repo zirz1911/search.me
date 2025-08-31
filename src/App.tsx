@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { ScriptItem } from "./types";
 import { getEndpointForTarget, postJSON } from "./lib/api";
+import { execGemlogin } from "./lib/gemlogin";
 import ScriptCard from "./components/ScriptCard";
 import { ConfigModal, ViewModal } from "./components/Modals";
 
@@ -117,10 +118,7 @@ function GemSearch() {
     const script = allScripts.find((s) => s.id === id);
     if (!script) return alert("ไม่พบสคริปต์นี้");
 
-    const url = getEndpointForTarget(script.target);
-    if (!url) return alert("ยังไม่ได้ตั้งค่า URL สำหรับ target นี้ในไฟล์ .env.local");
-
-    let payload: any;
+    // If target is gemlogin -> always go through backend proxy using execGemlogin
     if (script.target === "gemlogin") {
       if (!script.token || !script.device_id || !script.profile_id || !script.workflow_id)
         return alert("สคริปต์ Gemlogin ยังขาดค่า token/device_id/profile_id/workflow_id ใน scripts.json");
@@ -130,7 +128,7 @@ function GemSearch() {
       if (Array.isArray(script.required_params) && script.required_params.some((k) => !(parameter[k] || "").trim()))
         return alert("กรอก parameter ให้ครบก่อนส่ง");
 
-      payload = {
+      const payload = {
         token: script.token,
         device_id: script.device_id,
         profile_id: script.profile_id,
@@ -139,9 +137,26 @@ function GemSearch() {
         soft_id: script.soft_id || "1",
         close_browser: false,
       };
-    } else {
-      payload = { scriptId: id, target: script.target, requestedAt: new Date().toISOString(), client: { id: "demo-client" } };
+
+      try {
+        const data = await execGemlogin(payload);
+        alert("ส่งงานแล้ว ✅\nตอบกลับ: " + (typeof data === "string" ? data : JSON.stringify(data)));
+      } catch (err: any) {
+        alert("เรียกปลายทางไม่สำเร็จ: " + (err?.message || String(err)));
+      }
+      return;
     }
+
+    // Other targets -> use configured endpoint
+    const url = getEndpointForTarget(script.target);
+    if (!url) return alert("ยังไม่ได้ตั้งค่า URL สำหรับ target นี้ในไฟล์ .env.local");
+
+    const payload = {
+      scriptId: id,
+      target: script.target,
+      requestedAt: new Date().toISOString(),
+      client: { id: "demo-client" },
+    };
 
     const { ok, status, data } = await postJSON(url, payload);
     if (!ok) return alert("เรียกปลายทางไม่สำเร็จ: " + (typeof data === "string" ? data : data?.message || status));
