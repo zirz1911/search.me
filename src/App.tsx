@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { ScriptItem } from "./types";
 import { getEndpointForTarget, postJSON } from "./lib/api";
-import { execGemlogin } from "./lib/gemlogin";
 import ScriptCard from "./components/ScriptCard";
 import { ConfigModal, ViewModal } from "./components/Modals";
 
@@ -11,8 +10,25 @@ import { mapRowToScriptItem } from "./lib/mappers";
 import { applyAiToSearch } from "./lib/ai";
 
 // ---- Backend API base (for Postgres service) ----
-const API_BASE = (import.meta as any).env.VITE_API_BASE as string | undefined;
+const API_BASE_RAW = ((import.meta as any).env.VITE_API_BASE as string | undefined) ?? "http://localhost:4000";
+const API_BASE = API_BASE_RAW.replace(/\/+$/, ""); // trim trailing slashes
 
+// Optional shared secret for backend proxy
+const PROXY_KEY = ((import.meta as any).env.VITE_PROXY_KEY as string | undefined) ?? "";
+
+// Debug helper (mask secrets in console)
+const mask = (v?: string | null, keepStart = 3, keepEnd = 2) => {
+  if (!v) return "";
+  const s = String(v);
+  if (s.length <= keepStart + keepEnd) return "*".repeat(s.length);
+  return s.slice(0, keepStart) + "…" + s.slice(-keepEnd);
+};
+
+// Optional: show where data/requests come from while developing
+if (import.meta.env?.MODE !== "production") {
+  // eslint-disable-next-line no-console
+  console.log("[FE] API_BASE=", API_BASE, " PROXY_KEY(set?)=", Boolean(PROXY_KEY), " preview=", mask(PROXY_KEY));
+}
 
 const DEFAULT_SCRIPTS: ScriptItem[] = [ /* คงไว้เหมือนเดิมหรือเว้นว่างก็ได้ */ ];
 
@@ -118,15 +134,20 @@ function GemSearch() {
     const script = allScripts.find((s) => s.id === id);
     if (!script) return alert("ไม่พบสคริปต์นี้");
 
-    // If target is gemlogin -> always go through backend proxy using execGemlogin
     if (script.target === "gemlogin") {
-      if (!script.token || !script.device_id || !script.profile_id || !script.workflow_id)
+      if (!script.token || !script.device_id || !script.profile_id || !script.workflow_id) {
         return alert("สคริปต์ Gemlogin ยังขาดค่า token/device_id/profile_id/workflow_id ใน scripts.json");
+      }
 
       const current = paramValues[script.id] || {};
-      const parameter = { ...(script.default_params || {}), ...current };
-      if (Array.isArray(script.required_params) && script.required_params.some((k) => !(parameter[k] || "").trim()))
+      const parameter = { ...(script.default_params || {}), ...current } as Record<string, any>;
+
+      if (
+        Array.isArray(script.required_params) &&
+        script.required_params.some((k) => !(parameter[k] || "").toString().trim())
+      ) {
         return alert("กรอก parameter ให้ครบก่อนส่ง");
+      }
 
       const payload = {
         token: script.token,
@@ -139,7 +160,19 @@ function GemSearch() {
       };
 
       try {
-        const data = await execGemlogin(payload);
+        const res = await fetch(`${API_BASE}/proxy/gemlogin`, {
+          method: "POST",
+          headers: (() => {
+            const h: Record<string, string> = { "content-type": "application/json" };
+            if (PROXY_KEY) h["x-proxy-key"] = PROXY_KEY;
+            return h;
+          })(),
+          body: JSON.stringify(payload),
+        });
+        const raw = await res.text();
+        if (!res.ok) throw new Error(`Proxy error ${res.status}: ${raw}`);
+        let data: any = raw;
+        try { data = JSON.parse(raw); } catch {}
         alert("ส่งงานแล้ว ✅\nตอบกลับ: " + (typeof data === "string" ? data : JSON.stringify(data)));
       } catch (err: any) {
         alert("เรียกปลายทางไม่สำเร็จ: " + (err?.message || String(err)));

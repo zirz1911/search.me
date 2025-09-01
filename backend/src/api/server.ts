@@ -13,9 +13,67 @@ function mask(val?: string | null, keepStart = 4, keepEnd = 2) {
   return s.slice(0, keepStart) + "…" + s.slice(-keepEnd);
 }
 
+function toFormParams(obj: any, prefix = "", out?: URLSearchParams): URLSearchParams {
+  const params = out || new URLSearchParams();
+  if (obj == null) return params;
+  Object.entries(obj).forEach(([key, val]) => {
+    const k = prefix ? `${prefix}[${key}]` : key;
+    if (val !== null && typeof val === "object" && !Array.isArray(val)) {
+      toFormParams(val, k, params);
+    } else if (Array.isArray(val)) {
+      val.forEach((v) => params.append(`${k}[]`, String(v)));
+    } else {
+      params.append(k, String(val));
+    }
+  });
+  return params;
+}
+
+function pickEncoding(req: express.Request): "json" | "form" {
+  const q = String(req.query?.encoding ?? "").toLowerCase();
+  if (q === "form") return "form";
+  if ((process.env.GEMLOGIN_ENCODING || "").toLowerCase() === "form") return "form";
+  return "json";
+}
+
+function buildUpstreamBody(src: any, req: express.Request) {
+  const b: any = { ...(src || {}) };
+  if (!b.parameter || typeof b.parameter !== "object") b.parameter = {};
+  // Allow passing url via query (?url=...)
+  if (!b.parameter.url && typeof req.query.url === "string") {
+    b.parameter.url = String(req.query.url);
+  }
+  // Env overrides (handy while debugging or to ensure consistent identity)
+  if (process.env.GEMLOGIN_TOKEN)       b.token       = process.env.GEMLOGIN_TOKEN;
+  if (process.env.GEMLOGIN_DEVICE_ID)   b.device_id   = process.env.GEMLOGIN_DEVICE_ID;
+  if (process.env.GEMLOGIN_PROFILE_ID)  b.profile_id  = process.env.GEMLOGIN_PROFILE_ID;
+  if (process.env.GEMLOGIN_WORKFLOW_ID) b.workflow_id = process.env.GEMLOGIN_WORKFLOW_ID;
+  if (process.env.GEMLOGIN_SOFT_ID)     b.soft_id     = process.env.GEMLOGIN_SOFT_ID;
+  // Default soft id if still empty
+  if (!b.soft_id) b.soft_id = "1";
+  return b;
+}
+
 const app = express();
 app.use(cors({ origin: ['http://localhost:5173'], credentials: false }));
 app.use(express.json());
+
+// Optional proxy key for protecting /proxy/* endpoints
+const PROXY_KEY = process.env.PROXY_KEY || process.env.X_PROXY_KEY || "";
+
+// Enforce x-proxy-key when configured
+app.use((req, res, next) => {
+  if (req.path.startsWith("/proxy/") && PROXY_KEY) {
+    const clientKey = req.get("x-proxy-key") || "";
+    if (clientKey !== PROXY_KEY) {
+      console.warn(
+        `[Proxy] 401 Unauthorized: bad x-proxy-key from ${req.ip}. got=${mask(clientKey)} expected=${mask(PROXY_KEY)}`
+      );
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+  }
+  next();
+});
 
 // Dev-only: check env values loaded by this process (remove before production)
 app.get("/__env-check", (req, res) => {
@@ -79,10 +137,10 @@ app.post("/proxy/gemlogin", async (req, res) => {
       return process.env.GEMLOGIN_BASE || "https://app.gemlogin.io";
     })();
 
-    const fallbackList = (process.env.GEMLOGIN_PATHS || 
+    const fallbackList = (process.env.GEMLOGIN_PATHS ||
       "/api/v2/execscript,/api/execscript,/api/v1/execscript,/execscript," +
-      "/api/v2/exescript,/api/execscript,/api/v1/execscript,/execscript," +
-      "/api/v2/exeScript,/api/execScript,/api/v1/execScript,/execScript")
+      "/api/v2/exescript,/api/exescript,/api/v1/exescript,/exescript," +
+      "/api/v2/exeScript,/api/exeScript,/api/v1/exeScript,/exeScript")
       .split(",")
       .map(s => s.trim())
       .filter(Boolean);
@@ -102,15 +160,50 @@ app.post("/proxy/gemlogin", async (req, res) => {
       headers["authorization"] = `Bearer ${process.env.GEMLOGIN_BEARER}`;
     }
 
-    let last404: { url: string; status: number; body: string; ct: string } | null = null;
+    const mergedBody = buildUpstreamBody(req.body, req);
+    console.log("[Gemlogin proxy] effective body ids", {
+      device_id: mergedBody?.device_id,
+      profile_id: mergedBody?.profile_id,
+      workflow_id: mergedBody?.workflow_id,
+      soft_id: mergedBody?.soft_id,
+      has_url: Boolean(mergedBody?.parameter?.url),
+    });
 
+    const preview = {
+      device_id: mergedBody?.device_id,
+      profile_id: mergedBody?.profile_id,
+      workflow_id: mergedBody?.workflow_id,
+      soft_id: mergedBody?.soft_id,
+      parameter: mergedBody?.parameter,
+      token_preview: mask(mergedBody?.token),
+    };
+    console.log("[Gemlogin proxy] payload =", JSON.stringify(preview));
+    // Debug: show which URLs will be tried
+    console.log("[Gemlogin proxy] try order =", tryUrls);
+
+    let last404: { url: string; status: number; body: string; ct: string } | null = null;
     for (const url of tryUrls) {
+      const encoding = pickEncoding(req);
+      let bodyToSend: any;
+      if (encoding === "form") {
+        bodyToSend = toFormParams(mergedBody);
+        headers["content-type"] = "application/x-www-form-urlencoded";
+      } else {
+        bodyToSend = JSON.stringify(mergedBody ?? {});
+        headers["content-type"] = "application/json";
+      }
+
+      // Add a 25s timeout so we don't hang forever
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), 25_000);
+
       const resp = await fetch(url, {
         method: "POST",
         headers,
-        body: JSON.stringify(req.body ?? {}),
+        body: bodyToSend,
         redirect: "manual",
-      });
+        signal: controller.signal,
+      }).finally(() => clearTimeout(t));
 
       const contentType = resp.headers.get("content-type") || "";
       const location = resp.headers.get("location") || "";
@@ -128,6 +221,39 @@ app.post("/proxy/gemlogin", async (req, res) => {
       }
 
       const raw = await resp.text();
+
+      // If upstream returned 401, log details and pass through so FE sees exact message
+      if (resp.status === 401) {
+        console.warn("[Gemlogin proxy] 401 Unauthorized from upstream", {
+          matched: url,
+          contentType,
+          snippet: raw.slice(0, 400),
+        });
+        res.setHeader("x-gemlogin-matched", url);
+        if (!contentType.includes("json")) {
+          return res.status(resp.status).json({
+            success: false,
+            message: "Unauthorized",
+            upstream: { url, status: resp.status, body: raw.slice(0, 400) },
+          });
+        }
+        return res.status(resp.status).type(contentType || "application/json").send(raw);
+      }
+
+      // For other client/server errors (>=400 but not 404), log a short snippet too
+      if (resp.status >= 400 && resp.status !== 404) {
+        console.warn("[Gemlogin proxy] upstream error", {
+          status: resp.status,
+          matched: url,
+          contentType,
+          snippet: raw.slice(0, 400),
+        });
+        res.setHeader("x-gemlogin-matched", url);
+        if (!contentType.includes("json")) {
+          return res.status(resp.status).type("text/plain; charset=utf-8").send(raw);
+        }
+        return res.status(resp.status).type(contentType || "application/json").send(raw);
+      }
 
       // If not 404, consider it a match and forward
       if (resp.status !== 404) {
@@ -147,6 +273,7 @@ app.post("/proxy/gemlogin", async (req, res) => {
     return res.status(404).json({
       message: "All candidate Gemlogin routes returned 404",
       tried,
+      last404,
     });
   } catch (err: any) {
     console.error("[Gemlogin proxy] error:", err);
@@ -158,6 +285,7 @@ console.log("[ENV] GEMLOGIN_URL    =", process.env.GEMLOGIN_URL || "(unset)");
 console.log("[ENV] GEMLOGIN_BASE   =", process.env.GEMLOGIN_BASE || "(unset)");
 console.log("[ENV] GEMLOGIN_PATHS  =", process.env.GEMLOGIN_PATHS || "(unset)");
 console.log("[ENV] BEARER(set?)    =", Boolean(process.env.GEMLOGIN_BEARER));
+console.log("[ENV] PROXY_KEY(set?) =", Boolean(PROXY_KEY));
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
