@@ -29,6 +29,7 @@
     "summary": "จัดตาราง warm-up เครื่อง/โปรไฟล์, ตั้งค่าความถี่และช่วงเวลา.",
     "language": "Node.js",
     "lastUpdated": "2025-08-20",
+    
     "confidence": 0.88,
     "tags": ["scheduler", "warmup", "profiles"]
   },
@@ -38,9 +39,11 @@
     "target": "n8n",
     "summary": "Webhook รับคำขอลูกค้า → LLM จัดหมวดหมู่ → ส่งต่อไปยัง connector ที่เหมาะสม.",
     "language": "n8n workflow",
-    "lastUpdated": "2025-08-24",
+    "tags": ["webhook","routing","tiktok"],
     "confidence": 0.9,
-    "tags": ["webhook", "routing", "tiktok"]
+    "params_default": {
+      "webhook_url": "https://trusting-lately-rodent.ngrok-free.app/webhook/sendtelegram"
+    }
   },
   {
     "id": "S-004",

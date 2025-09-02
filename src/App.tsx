@@ -4,7 +4,7 @@ import { getEndpointForTarget, postJSON } from "./lib/api";
 import ScriptCard from "./components/ScriptCard";
 import { ConfigModal, ViewModal } from "./components/Modals";
 
-import { callN8nIntentAPI } from "./lib/n8n";
+import { callN8nIntentAPI, sendToN8n } from "./lib/n8n";
 import { scoreScript } from "./lib/intent";
 import { mapRowToScriptItem } from "./lib/mappers";
 import { applyAiToSearch } from "./lib/ai";
@@ -23,6 +23,21 @@ const mask = (v?: string | null, keepStart = 3, keepEnd = 2) => {
   if (s.length <= keepStart + keepEnd) return "*".repeat(s.length);
   return s.slice(0, keepStart) + "…" + s.slice(-keepEnd);
 };
+
+// Normalize default params that may come as JSON string or object
+function asObj(v: any): Record<string, any> {
+  if (!v) return {};
+  if (typeof v === "string") {
+    try {
+      const o = JSON.parse(v);
+      return o && typeof o === "object" ? (o as Record<string, any>) : {};
+    } catch {
+      return {};
+    }
+  }
+  if (typeof v === "object") return v as Record<string, any>;
+  return {};
+}
 
 // Optional: show where data/requests come from while developing
 if (import.meta.env?.MODE !== "production") {
@@ -65,7 +80,7 @@ function GemSearch() {
               const mapped = rows.map(mapRowToScriptItem);
               setAllScripts(mapped);
               const initParams = mapped.reduce((acc, it) => {
-                acc[it.id] = { ...(it.default_params || {}) };
+                acc[it.id] = { ...asObj(it.default_params) };
                 return acc;
               }, {} as Record<string, Record<string, string>>);
               setParamValues(initParams);
@@ -86,7 +101,7 @@ function GemSearch() {
         const mapped = data.map(mapRowToScriptItem);
         setAllScripts(mapped);
         const initParams = mapped.reduce((acc, it) => {
-          acc[it.id] = { ...(it.default_params || {}) };
+          acc[it.id] = { ...asObj(it.default_params) };
           return acc;
         }, {} as Record<string, Record<string, string>>);
         setParamValues(initParams);
@@ -140,7 +155,7 @@ function GemSearch() {
       }
 
       const current = paramValues[script.id] || {};
-      const parameter = { ...(script.default_params || {}), ...current } as Record<string, any>;
+      const parameter = { ...asObj(script.default_params), ...current } as Record<string, any>;
 
       if (
         Array.isArray(script.required_params) &&
@@ -176,6 +191,40 @@ function GemSearch() {
         alert("ส่งงานแล้ว ✅\nตอบกลับ: " + (typeof data === "string" ? data : JSON.stringify(data)));
       } catch (err: any) {
         alert("เรียกปลายทางไม่สำเร็จ: " + (err?.message || String(err)));
+      }
+      return;
+    }
+
+    if (script.target === "n8n") {
+      const current = paramValues[script.id] || {};
+      const params = { ...asObj(script.default_params), ...current } as Record<string, any>;
+
+      if (
+        Array.isArray(script.required_params) &&
+        script.required_params.some((k) => !(params[k] || "").toString().trim())
+      ) {
+        return alert("กรอก parameter ให้ครบก่อนส่ง");
+      }
+
+      try {
+        const resp = await sendToN8n({
+          scriptId: script.id,
+          params,
+          userText: q.trim(),
+          meta: { source: "frontend" },
+        });
+
+        if (!resp || resp.success === false) {
+          return alert("เรียก n8n ไม่สำเร็จ: " + (resp?.message || ""));
+        }
+
+        const payload = resp?.data ?? resp;
+        alert(
+          "ส่งไป n8n แล้ว ✅\nตอบกลับ: " +
+            (typeof payload === "string" ? payload : JSON.stringify(payload))
+        );
+      } catch (e: any) {
+        alert("เรียก n8n ไม่สำเร็จ: " + (e?.message || String(e)));
       }
       return;
     }
