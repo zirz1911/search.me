@@ -47,6 +47,44 @@ if (import.meta.env?.MODE !== "production") {
 
 const DEFAULT_SCRIPTS: ScriptItem[] = [ /* คงไว้เหมือนเดิมหรือเว้นว่างก็ได้ */ ];
 
+// === Recent usage (local) ===
+type UsageItem = {
+  id: string;
+  name: string;
+  target: string;
+  ts: number; // epoch ms
+};
+
+const HISTORY_KEY = "gem:last-usage:v1";
+function loadHistory(): UsageItem[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+function saveHistory(items: UsageItem[]) {
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(items.slice(0, 50))); } catch {}
+}
+function recordUsage(now: number, s: { id: string; name: string; target: string }, current: UsageItem[]) {
+  const next = [{ id: s.id, name: s.name || s.id, target: s.target, ts: now }, ...current];
+  saveHistory(next);
+  return next.slice(0, 50);
+}
+function timeAgo(ts: number) {
+  const diff = Math.max(0, Date.now() - ts);
+  const s = Math.floor(diff / 1000);
+  if (s < 5) return "just now";
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
+}
+
 export default function App() { return <GemSearch />; }
 
 function GemSearch() {
@@ -60,6 +98,7 @@ function GemSearch() {
   const [viewing, setViewing] = useState<ScriptItem | null>(null);
   const [configFor, setConfigFor] = useState<ScriptItem | null>(null);
   const [dataSource, setDataSource] = useState<'api' | 'file' | 'none'>('none');
+  const [history, setHistory] = useState<UsageItem[]>(() => loadHistory());
 
 
   function updateParam(scriptId: string, key: string, val: string) {
@@ -189,6 +228,7 @@ function GemSearch() {
         let data: any = raw;
         try { data = JSON.parse(raw); } catch {}
         alert("ส่งงานแล้ว ✅\nตอบกลับ: " + (typeof data === "string" ? data : JSON.stringify(data)));
+        setHistory(h => recordUsage(Date.now(), { id: script.id, name: script.name, target: script.target }, h));
       } catch (err: any) {
         alert("เรียกปลายทางไม่สำเร็จ: " + (err?.message || String(err)));
       }
@@ -223,6 +263,7 @@ function GemSearch() {
           "ส่งไป n8n แล้ว ✅\nตอบกลับ: " +
             (typeof payload === "string" ? payload : JSON.stringify(payload))
         );
+        setHistory(h => recordUsage(Date.now(), { id: script.id, name: script.name, target: script.target }, h));
       } catch (e: any) {
         alert("เรียก n8n ไม่สำเร็จ: " + (e?.message || String(e)));
       }
@@ -243,23 +284,36 @@ function GemSearch() {
     const { ok, status, data } = await postJSON(url, payload);
     if (!ok) return alert("เรียกปลายทางไม่สำเร็จ: " + (typeof data === "string" ? data : data?.message || status));
     alert("ส่งงานแล้ว ✅\nตอบกลับ: " + (typeof data === "string" ? data : JSON.stringify(data)));
+    setHistory(h => recordUsage(Date.now(), { id: script.id, name: script.name, target: script.target }, h));
   }
 
   return (
     <div className="min-h-screen bg-white text-gray-900">
-      <header className="mx-auto max-w-3xl pt-16 pb-6 text-center">
+      <header className="mx-auto max-w-6xl px-6 pt-12 pb-2">
         <h1 className="text-5xl font-semibold tracking-tight">Search Me Bro</h1>
       </header>
 
-      <form onSubmit={handleSubmit} className="mx-auto flex w-full max-w-3xl items-center gap-3 px-6">
-        <div className="flex w-full items-center rounded-full bg-indigo-700 px-5 py-3 shadow-sm">
-          <MagnifierIcon className="mr-3 h-5 w-5 text-white/90" />
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="อธิบายสคริปต์ที่ต้องการ… เช่น: เพิ่มวิว YouTube จากลิงก์" className="w-full bg-transparent text-white placeholder-white/70 outline-none" />
-          <button type="submit" className="ml-3 rounded-full bg-white/15 px-4 py-2 text-sm font-medium text-white backdrop-blur hover:bg-white/25">ค้นหา</button>
+      <form onSubmit={handleSubmit} className="mx-auto max-w-6xl px-6">
+        <div className="max-w-[640px]">
+          <div className="flex w-full items-center rounded-full bg-indigo-700 px-5 py-3 shadow-sm">
+            <MagnifierIcon className="mr-3 h-5 w-5 text-white/90" />
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="อธิบายสคริปต์ที่ต้องการ… เช่น: เพิ่มวิว YouTube จากลิงก์"
+              className="w-full bg-transparent text-white placeholder-white/70 outline-none"
+            />
+            <button
+              type="submit"
+              className="ml-3 rounded-full bg-white/15 px-4 py-2 text-sm font-medium text-white backdrop-blur hover:bg-white/25"
+            >
+              ค้นหา
+            </button>
+          </div>
         </div>
       </form>
 
-      <main className="mx-auto max-w-5xl px-6 pb-24 pt-8">
+      <main className="mx-auto max-w-6xl px-6 pb-24 pt-8">
         {submitted && (
           <p className="mb-4 text-sm text-gray-500">
             {isSearching ? (
@@ -283,27 +337,56 @@ function GemSearch() {
           </p>
         )}
 
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {isSearching && <PlaceholderCards />}
-          {!isSearching && results.map((s) => (
-            <ScriptCard
-              key={s.id}
-              s={s}
-              score={matchScores[s.id]}
-              paramValues={paramValues}
-              updateParam={(key, val) => updateParam(s.id, key, val)}
-              onRun={handleRun}
-              onView={(id) => setViewing(allScripts.find(x => x.id === id) || null)}
-              onConfig={(id) => setConfigFor(allScripts.find(x => x.id === id) || null)}
-            />
-          ))}
-        </div>
+        <div className="lg:grid lg:grid-cols-[1fr_320px] lg:gap-8">
+          {/* LEFT: results */}
+          <div>
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-2">
+              {isSearching && <PlaceholderCards />}
+              {!isSearching && results.map((s) => (
+                <ScriptCard
+                  key={s.id}
+                  s={s}
+                  score={matchScores[s.id]}
+                  paramValues={paramValues}
+                  updateParam={(key, val) => updateParam(s.id, key, val)}
+                  onRun={handleRun}
+                  onView={(id) => setViewing(allScripts.find(x => x.id === id) || null)}
+                  onConfig={(id) => setConfigFor(allScripts.find(x => x.id === id) || null)}
+                />
+              ))}
+            </div>
 
-        {!isSearching && submitted && results.length === 0 && (
-          <div className="mt-8 rounded-2xl border border-dashed p-8 text-center text-gray-500">
-            ไม่พบสคริปต์ที่ตรง ลองพิมพ์คำค้นอื่น เช่น "login", "uploader", "proxy"
+            {!isSearching && submitted && results.length === 0 && (
+              <div className="mt-8 rounded-2xl border border-dashed p-8 text-center text-gray-500">
+                ไม่พบสคริปต์ที่ตรง ลองพิมพ์คำค้นอื่น เช่น "login", "uploader", "proxy"
+              </div>
+            )}
           </div>
-        )}
+
+          {/* RIGHT: history */}
+          <aside className="mt-10 lg:mt-0">
+            <div className="sticky top-6 rounded-2xl border border-gray-200 p-4">
+              <h3 className="mb-3 text-lg font-semibold">Last use Script</h3>
+              {history.length === 0 ? (
+                <p className="text-sm text-gray-500">ยังไม่มีประวัติการใช้งาน</p>
+              ) : (
+                <ul className="space-y-2">
+                  {history.slice(0, 12).map((h, i) => (
+                    <li key={i} className="rounded-lg bg-gray-50 px-3 py-2">
+                      <div className="flex items-center justify-between">
+                        <span className="truncate text-sm font-medium">{h.name || h.id}</span>
+                        <span className="ml-3 whitespace-nowrap text-xs text-gray-500">{timeAgo(h.ts)}</span>
+                      </div>
+                      <div className="mt-1 text-[11px] uppercase tracking-wide text-gray-500">
+                        {h.target}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </aside>
+        </div>
 
         {configFor && (
           <ConfigModal
